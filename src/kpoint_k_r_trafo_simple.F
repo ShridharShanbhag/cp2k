@@ -320,7 +320,7 @@ CONTAINS
 
       COMPLEX(kind=dp)                                   :: phase_factor
       INTEGER                                            :: i, j
-      REAL(kind=dp)                                      :: deriv_factor
+      COMPLEX(kind=dp)                                   :: deriv_factor
       REAL(kind=dp), DIMENSION(3)                        :: cell_vector
 
       IF (PRESENT(deriv_direction) .AND. (.NOT. PRESENT(hmat))) THEN
@@ -330,7 +330,7 @@ CONTAINS
       deriv_factor = 1.0_dp
       IF (PRESENT(deriv_direction)) THEN
          cell_vector = MATMUL(hmat, index_to_cell(1:3, imindex))
-         deriv_factor = cell_vector(deriv_direction)
+         deriv_factor = CMPLX(0.0_dp, cell_vector(deriv_direction))
       END IF
 
       phase_factor = CMPLX(COS(twopi*SUM(xkp(:)*index_to_cell(:, imindex))), &
