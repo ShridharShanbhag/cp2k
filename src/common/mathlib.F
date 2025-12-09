@@ -47,9 +47,7 @@ MODULE mathlib
              diag_complex, &
              gemm_square, &
              power, &
-             geeig_right, &
-             geeig_right_2, &
-             generalized_eigen_right
+             geeig_right
 
    ! Public functions
 
@@ -2028,6 +2026,15 @@ CONTAINS
 
    END SUBROUTINE dgemm_square_3
 
+! **************************************************************************************************
+!> \brief ...
+!> \param matrix ...
+!> \param exponent ...
+!> \param eps ...
+!> \param cond_nr ...
+!> \param min_ev ...
+!> \param max_ev ...
+! **************************************************************************************************
    SUBROUTINE power(matrix, exponent, eps, cond_nr, min_ev, max_ev)
       COMPLEX(KIND=dp), DIMENSION(:, :)                  :: matrix
       REAL(KIND=dp)                                      :: exponent, eps
@@ -2070,106 +2077,42 @@ CONTAINS
 
    END SUBROUTINE power
 
-   SUBROUTINE generalized_eigen_right(A_in, B_in, eigenvalues, eigenvectors)
-      COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)         :: A_in
-      COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)         :: B_in
-      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: eigenvectors
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)              :: eigenvalues
-      COMPLEX(kind=dp), DIMENSION(:, :), ALLOCATABLE        :: a, b, vr
-      COMPLEX(kind=dp), DIMENSION(:), ALLOCATABLE           :: alpha, beta, work
-      REAL(kind=dp), DIMENSION(:), ALLOCATABLE              :: rwork
-      COMPLEX(kind=dp), DIMENSION(1, 1)                     :: dummy
-
-      CHARACTER(len=*), PARAMETER                        :: routineN = 'generalized_eigen_right'
-
-      INTEGER                                            :: handle, n, lwork, info, i
-
-      CALL timeset(routineN, handle)
-
-      n = SIZE(A_in, 1)
-
-      IF (n /= SIZE(A_in, 2)) CPABORT("Non-square array 1 (A).")
-      IF (n /= SIZE(B_in, 1)) CPABORT("Incompatible (rows) array 2 (B).")
-      IF (n /= SIZE(B_in, 2)) CPABORT("Non-square array 2 (B).")
-
-      ALLOCATE (a(n,n), alpha(n), b(n,n), beta(n), vr(n,n), rwork(8*n))
-      lwork=-1
-      CALL ZGGEV('N', 'V', n, a, n, b, n, alpha, beta, dummy, 1, vr, n, dummy, lwork, rwork, info)
-      IF (info /= 0) CPABORT("Generalized eigenvalue equation of a complex matrix failed")
-      lwork=max(1, nint(real(dummy(1,1))))
-      ALLOCATE(work(lwork))
-      a(:,:)=A_in(:,:)
-      b(:,:)=B_in(:,:)
-      CALL ZGGEV('N', 'V', n, a, n, b, n, alpha, beta, dummy, 1, vr, n, work, lwork, rwork, info)
-      IF (info /= 0) CPABORT("Generalized eigenvalue equation of a complex matrix failed")
-      IF (any([(beta(i)==0, i=1,n)])) CPABORT("Eigenvalues are divergent")
-
-      eigenvalues = REAL(alpha)/REAL(beta)
-      DO i=1,n
-         vr(:,i)=vr(:,i)/sum(ABS(vr(:,i))**2)
-      END DO
-      eigenvectors = vr
-
-      DEALLOCATE(a, b, alpha, beta, vr, rwork, work)
-      CALL timestop(handle)
-
-   END SUBROUTINE generalized_eigen_right
-   SUBROUTINE geeig_right(A_in, B_in, eigenvalues, eigenvectors)
-      COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)         :: A_in
-      COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)         :: B_in
-      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: eigenvectors
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)              :: eigenvalues
-      COMPLEX(kind=dp), DIMENSION(:, :), ALLOCATABLE        :: B_n_root, B_root, D, E
-      CHARACTER(len=*), PARAMETER                        :: routineN = 'geeig_right'
-      INTEGER                                            :: handle, n
-      CALL timeset(routineN, handle)
-
-      ! get S^1/2, S^-1/2, multiply to get F^~, diagonalize, get eigens
-      n = SIZE(A_in, 1)
-      ALLOCATE (B_root(n, n), B_n_root(n,n), D(n,n), E(n,n))
-      B_n_root(:,:)= B_in(:,:)
-      B_root(:,:)  = B_in(:,:)
-      CALL power(B_root, 0.5_dp, 0.0_dp)
-      CALL power(B_n_root, -0.5_dp, 0.0_dp)
-      CALL gemm_square(B_n_root, 'N', A_in, 'N', B_n_root, 'N', D)
-      CALL diag_complex(D, E, eigenvalues)
-      CALL gemm_square(B_root, 'N', E, 'N', eigenvectors)
-      DEALLOCATE (B_root, B_n_root, D, E)
-
-      CALL timestop(handle)
-   END SUBROUTINE geeig_right
-   SUBROUTINE geeig_right_2(A_in, B_in, eigenvalues, eigenvectors, epseig)
-      COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)         :: A_in
-      COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)         :: B_in
-      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)        :: eigenvectors
-      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)              :: eigenvalues
-      COMPLEX(kind=dp), DIMENSION(:, :), ALLOCATABLE        :: B_n_root, B_root, D, E
-      CHARACTER(len=*), PARAMETER                        :: routineN = 'geeig_right_2'
-      INTEGER                                            :: handle, n
-
-      COMPLEX(KIND=dp), DIMENSION(:, :) , ALLOCATABLE    :: work, A, B
+! **************************************************************************************************
+!> \brief ...
+!> \param A_in ...
+!> \param B_in ...
+!> \param eigenvalues ...
+!> \param eigenvectors ...
+!> \param epseig ...
+! **************************************************************************************************
+   SUBROUTINE geeig_right(A_in, B_in, eigenvalues, eigenvectors, epseig)
+      COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)      :: A_in, B_in
+      REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eigenvalues
+      COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: eigenvectors
       REAL(KIND=dp), INTENT(IN)                          :: epseig
+
+      CHARACTER(len=*), PARAMETER                        :: routineN = 'geeig_right'
       COMPLEX(KIND=dp), PARAMETER :: cone = CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
          czero = CMPLX(0.0_dp, 0.0_dp, KIND=dp)
+
       COMPLEX(KIND=dp), ALLOCATABLE, DIMENSION(:)        :: cevals
-      INTEGER                                            :: i, icol, irow, nao, nc, ncol, &
-                                                            nmo, nx
+      COMPLEX(kind=dp), ALLOCATABLE, DIMENSION(:, :)     :: A, B, work
+      INTEGER                                            :: handle, i, icol, irow, lda, ldb, ldc, n, &
+                                                            nao, nc, ncol, nmo, nx
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
-      INTEGER                                            :: lda, ldb, ldc
 
       CALL timeset(routineN, handle)
 
       ! Test sizes
       nao = SIZE(A_in, 1)
       nmo = SIZE(eigenvalues)
-      print*, "nmo", nmo, "nao", nao
       ALLOCATE (evals(nao), cevals(nao))
-      ALLOCATE (work(nao,nao), B(nao,nao), A(nao,nao))
-      A(:,:) = A_in(:,:)
-      B(:,:) = B_in(:,:)
+      ALLOCATE (work(nao, nao), B(nao, nao), A(nao, nao))
+      A(:, :) = A_in(:, :)
+      B(:, :) = B_in(:, :)
 
       ! Diagonalize -S matrix, this way the NULL space is at the end of the spectrum
-      B=-B
+      B = -B
       CALL diag_complex(B, work, evals)
       evals(:) = -evals(:)
       nc = nao
@@ -2179,15 +2122,13 @@ CONTAINS
             EXIT
          END IF
       END DO
-      print*, "evals", evals
-      print*, "work", work
       CPASSERT(nc /= 0)
 
       IF (nc /= nao) THEN
          IF (nc < nmo) THEN
             ! Copy NULL space definition to last vectors of eigenvectors (if needed)
             ncol = nmo - nc
-            CALL zcopy(ncol*nao, work(1,nc+1), 1, eigenvectors(1,nc+1), 1)
+            CALL zcopy(ncol*nao, work(1, nc + 1), 1, eigenvectors(1, nc + 1), 1)
          END IF
          ! Set NULL space in eigenvector matrix of S to zero
          DO icol = nc + 1, nao
@@ -2200,8 +2141,8 @@ CONTAINS
       END IF
       ! Calculate U*s**(-1/2)
       cevals(:) = CMPLX(1.0_dp/SQRT(evals(:)), 0.0_dp, KIND=dp)
-      DO i= 1, MIN(SIZE(work,2), SIZE(cevals))
-         CALL zscal(MIN(SIZE(work,2), SIZE(cevals)), cevals(i), work(1, i), 1)
+      DO i = 1, MIN(SIZE(work, 2), SIZE(cevals))
+         CALL zscal(MIN(SIZE(work, 2), SIZE(cevals)), cevals(i), work(1, i), 1)
       END DO
       ! Reduce to get U^(-C) * H * U^(-1)
       CALL gemm_square(work, 'C', A, 'N', B)
@@ -2209,7 +2150,7 @@ CONTAINS
       IF (nc /= nao) THEN
          ! set diagonal values to save large value
          DO icol = nc + 1, nao
-            A(icol,icol)=10000*cone
+            A(icol, icol) = 10000*cone
          END DO
       END IF
       ! Diagonalize
@@ -2226,6 +2167,6 @@ CONTAINS
       DEALLOCATE (evals, cevals, work, B, A)
 
       CALL timestop(handle)
-   END SUBROUTINE geeig_right_2
+   END SUBROUTINE geeig_right
 
 END MODULE mathlib

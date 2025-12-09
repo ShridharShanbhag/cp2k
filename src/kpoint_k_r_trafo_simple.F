@@ -318,9 +318,8 @@ CONTAINS
       REAL(kind=dp), DIMENSION(3, 3), INTENT(IN), &
          OPTIONAL                                        :: hmat
 
-      COMPLEX(kind=dp)                                   :: phase_factor
+      COMPLEX(kind=dp)                                   :: deriv_factor, phase_factor
       INTEGER                                            :: i, j
-      COMPLEX(kind=dp)                                   :: deriv_factor
       REAL(kind=dp), DIMENSION(3)                        :: cell_vector
 
       IF (PRESENT(deriv_direction) .AND. (.NOT. PRESENT(hmat))) THEN
