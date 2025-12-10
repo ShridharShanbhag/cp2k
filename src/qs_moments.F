@@ -115,7 +115,7 @@ MODULE qs_moments
                                               rt_prop_type
    USE string_utilities,                ONLY: uppercase
 #include "./base/base_uses.f90"
-
+                                          
    IMPLICIT NONE
 
    PRIVATE
@@ -125,7 +125,8 @@ MODULE qs_moments
    ! Public subroutines
    PUBLIC :: build_berry_moment_matrix, build_local_moment_matrix
    PUBLIC :: build_berry_kpoint_matrix, build_local_magmom_matrix
-   PUBLIC :: qs_moment_berry_phase, qs_moment_locop, qs_moment_kpoints
+   PUBLIC :: qs_moment_berry_phase, qs_moment_locop
+   PUBLIC :: qs_moment_kpoints, build_local_moment_matrix_rs_img
    PUBLIC :: dipole_deriv_ao
    PUBLIC :: build_local_moments_der_matrix
    PUBLIC :: build_dsdv_moments
@@ -3319,6 +3320,7 @@ CONTAINS
 !> \param hmat ...
 !> \param i_rep ...
 !> \param spname ...
+!> \author Shridhar Shanbhag
 ! **************************************************************************************************
    SUBROUTINE calculate_kpoints_for_kpset(kpoint, kpset, hmat, i_rep, spname)
       TYPE(kpoint_type), POINTER                         :: kpoint
@@ -3403,16 +3405,17 @@ CONTAINS
 ! **************************************************************************************************
 !> \brief ...
 !> \param qs_env ...
-!> \param aod ...
+!> \param moments_rs_img ...
 !> \param ref_point ...
+!> \author Shridhar Shanbhag
 ! **************************************************************************************************
-   SUBROUTINE atomic_orbital_dipole(qs_env, aod, ref_point)
+   SUBROUTINE build_local_moment_matrix_rs_img(qs_env, moments_rs_img, ref_point)
 
       TYPE(qs_environment_type), POINTER                 :: qs_env
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: aod
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: moments_rs_img
       REAL(KIND=dp), DIMENSION(3), OPTIONAL              :: ref_point
 
-      CHARACTER(LEN=*), PARAMETER :: routineN = 'atomic_orbital_dipole'
+      CHARACTER(LEN=*), PARAMETER :: routineN = 'build_local_moment_matrix_rs_img'
 
       INTEGER :: handle, i, iatom, ic, icol, ikind, inode, irow, iset, j, jatom, jkind, jset, &
          ldsa, ldsb, ldwork, natom, ncoa, ncob, nimg, nkind, nseta, nsetb, nsize, sgfa, sgfb
@@ -3427,7 +3430,7 @@ CONTAINS
       REAL(KIND=dp)                                      :: dab
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_distribution_type), POINTER             :: dbcsr_dist
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: matrix_ks_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(gto_basis_set_p_type), DIMENSION(:), POINTER  :: basis_set_list
       TYPE(gto_basis_set_type), POINTER                  :: basis_set, basis_set_a, basis_set_b
@@ -3448,7 +3451,7 @@ CONTAINS
                       ks_env=ks_env, &
                       dft_control=dft_control, &
                       qs_kind_set=qs_kind_set, &
-                      matrix_ks_kp=matrix_ks, &
+                      matrix_ks_kp=matrix_ks_kp, &
                       particle_set=particle_set, cell=cell, &
                       para_env=para_env, &
                       sab_all=sab_all)
@@ -3491,17 +3494,17 @@ CONTAINS
                            cell_to_index=cell_to_index, &
                            index_to_cell=index_to_cell)
       nsize = SIZE(index_to_cell, 2)
-      CPASSERT(SIZE(aod, 2) == nsize)
+      CPASSERT(SIZE(moments_rs_img, 2) == nsize)
       DO i = 1, 3
          DO j = 1, nsize
-            ALLOCATE (aod(i, j)%matrix)
-            CALL dbcsr_create(matrix=aod(i, j)%matrix, template=matrix_ks(1, 1)%matrix, &
+            ALLOCATE (moments_rs_img(i, j)%matrix)
+            CALL dbcsr_create(matrix=moments_rs_img(i, j)%matrix, template=matrix_ks_kp(1, 1)%matrix, &
                               matrix_type=dbcsr_type_no_symmetry, &
                               name="DIPMAT", &
                               dist=dbcsr_dist, &
                               row_blk_size=row_blk_sizes, col_blk_size=row_blk_sizes)
-            CALL cp_dbcsr_alloc_block_from_nbl(aod(i, j)%matrix, sab_all)
-            CALL dbcsr_set(aod(i, j)%matrix, 0.0_dp)
+            CALL cp_dbcsr_alloc_block_from_nbl(moments_rs_img(i, j)%matrix, sab_all)
+            CALL dbcsr_set(moments_rs_img(i, j)%matrix, 0.0_dp)
          END DO
       END DO
 
@@ -3575,7 +3578,7 @@ CONTAINS
                               lb_max(jset), npgfb(jset), zetb(:, jset), rpgfb(:, jset), 1, &
                               rac, rbc, dipab)
                   DO i = 1, 3
-                     CALL dbcsr_get_block_p(matrix=aod(i, ic)%matrix, &
+                     CALL dbcsr_get_block_p(matrix=moments_rs_img(i, ic)%matrix, &
                                             row=irow, col=icol, BLOCK=dblock, found=found)
                      CPASSERT(found)
                      CALL dgemm("N", "N", ncoa, nsgfb(jset), ncob, &
@@ -3598,7 +3601,7 @@ CONTAINS
       DEALLOCATE (row_blk_sizes)
       CALL timestop(handle)
 
-   END SUBROUTINE atomic_orbital_dipole
+   END SUBROUTINE build_local_moment_matrix_rs_img
 
 ! **************************************************************************************************
 !> \brief ...
@@ -3607,6 +3610,7 @@ CONTAINS
 !> \param reference ...
 !> \param ref_point ...
 !> \param unit_number ...
+!> \author Shridhar Shanbhag
 ! **************************************************************************************************
    SUBROUTINE qs_moment_kpoints(qs_env, nmoments, reference, ref_point, unit_number)
       TYPE(qs_environment_type), POINTER                 :: qs_env
@@ -3615,30 +3619,27 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: unit_number
 
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_moment_kpoints'
-      COMPLEX(kind=dp), PARAMETER                        :: cmplxi = (0.0_dp, 1.0_dp)
       REAL(KIND=dp), PARAMETER                           :: eps_eigval_mat_s = -1.0_dp
 
       CHARACTER(LEN=default_string_length), &
          ALLOCATABLE, DIMENSION(:)                       :: spname
-      COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: eigenvectors, h_trafo, s_trafo
-      COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: cdc, chc, csc, d_k_trafo, dip, &
-                                                            h_k_trafo, s_k_trafo
-      INTEGER                                            :: handle, homo, i, i_rep, ikp, ispin, j, &
-                                                            k, mat_cols, mat_rows, n_images, &
-                                                            n_rep, nao, nimg, nkp, nkp_scf, nmo, &
-                                                            npline, num_cells
-      INTEGER, DIMENSION(3)                              :: periodic
-      INTEGER, DIMENSION(:), POINTER                     :: bigj
+      COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: C_k, H_k, S_k, D_k
+      COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: CDC, C_dH_C, C_dS_C, &
+                                                            dH_dk_i, dS_dk_i
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: dip
+      INTEGER                                            :: handle, i, i_rep, ikp, j, k, nkp, nkp_scf, &
+                                                            n_img_scf, n_img_all, n_rep, nao, npline, &
+                                                            nspin
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell, index_to_cell_all
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index, cell_to_index_all
       LOGICAL                                            :: explicit_kpnts, explicit_kpset
       REAL(KIND=dp), DIMENSION(3)                        :: rcc, xkp, xkpc
       REAL(KIND=dp), DIMENSION(3, 3)                     :: h_inv, hmat
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvals, occnum, occupation_numbers
+      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvals
       REAL(KIND=dp), DIMENSION(:, :), POINTER            :: bc
-      REAL(KIND=dp), DIMENSION(:, :, :, :), POINTER      :: d_matrix, h_matrix, s_matrix
+      REAL(KIND=dp), DIMENSION(:, :, :, :), POINTER      :: D_rs, H_rs, S_rs
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: aod, matrix_ks, matrix_s
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: moments_rs_img, matrix_ks_kp, matrix_s_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoint, kpoints_all, kpoints_scf
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
@@ -3653,8 +3654,8 @@ CONTAINS
       IF (nmoments > 1) CPABORT("KPOINT Moments bigger than 1 not implemented")
 
       CALL get_qs_env(qs_env, &
-                      matrix_ks_kp=matrix_ks, &
-                      matrix_s_kp=matrix_s, &
+                      matrix_ks_kp=matrix_ks_kp, &
+                      matrix_s_kp=matrix_s_kp, &
                       sab_all=sab_all, &
                       particle_set=particle_set, &
                       cell=cell, &
@@ -3663,59 +3664,50 @@ CONTAINS
                       para_env=para_env, &
                       dft_control=dft_control, &
                       mos=mos)
-      CALL get_cell(cell=cell, h_inv=h_inv, h=hmat, periodic=periodic)
+      CALL get_cell(cell=cell, h_inv=h_inv, h=hmat)
 
       CALL get_reference_point(rcc, qs_env=qs_env, reference=reference, ref_point=ref_point)
 
-      CALL get_mo_set(mo_set=mos(1), &
-                      nao=nao, &
-                      nmo=nmo, &
-                      homo=homo, &
-                      occupation_numbers=occupation_numbers)
-      ALLOCATE (occnum(nao))
-      DO i = 1, nao
-         IF (i < nmo + 1) THEN
-            occnum(i) = occupation_numbers(i)
-         ELSE
-            occnum(i) = 0.0_dp
-         END IF
-      END DO
+      CALL get_mo_set(mo_set=mos(1), nao=nao)
       CALL get_kpoint_info(kpoints_scf, &
                            cell_to_index=cell_to_index, &
                            nkp=nkp_scf, &
                            index_to_cell=index_to_cell)
+
+      n_img_scf = dft_control%nimages
       NULLIFY (kpoints_all)
       CALL kpoint_create(kpoints_all)
       CALL kpoint_init_cell_index(kpoints_all, sab_all, para_env, dft_control)
-      dft_control%nimages = nimg
+      dft_control%nimages = n_img_scf
       CALL get_kpoint_info(kpoints_all, &
                            cell_to_index=cell_to_index_all, &
                            index_to_cell=index_to_cell_all)
-      ispin = 1
-      num_cells = SIZE(index_to_cell, 2)
-      n_images = SIZE(index_to_cell_all, 2)
-      CPASSERT(num_cells == SIZE(matrix_ks, 2))
-      NULLIFY (aod)
-      CALL dbcsr_allocate_matrix_set(aod, 3, n_images)
-      CALL atomic_orbital_dipole(qs_env, aod, ref_point=rcc)
-      CALL dbcsr_get_info(matrix_s(1, 1)%matrix, nfullrows_total=mat_rows, nfullcols_total=mat_cols)
+      nspin = SIZE(matrix_ks_kp, 1)
+      !  only for closed shell at present
+      CPASSERT(nspin == 1)
 
-      ALLOCATE (s_matrix(ispin, mat_rows, mat_cols, n_images), source=0.0_dp)
-      ALLOCATE (h_matrix(ispin, mat_rows, mat_cols, n_images), source=0.0_dp)
-      ALLOCATE (d_matrix(3, mat_rows, mat_cols, n_images), source=0.0_dp)
-      ALLOCATE (s_k_trafo(3, mat_rows, mat_cols), h_k_trafo(3, mat_rows, mat_cols), source=z_zero)
-      ALLOCATE (d_k_trafo(3, mat_rows, mat_cols), source=z_zero)
-      ALLOCATE (csc(3, mat_rows, mat_cols), chc(3, mat_rows, mat_cols), source=z_zero)
-      ALLOCATE (cdc(3, mat_rows, mat_cols), dip(3, mat_rows, mat_cols), source=z_zero)
-      ALLOCATE (s_trafo(mat_rows, mat_cols), h_trafo(mat_rows, mat_cols), source=z_zero)
-      ALLOCATE (bigj(mat_rows), source=0)
+      n_img_scf = SIZE(index_to_cell, 2)
+      n_img_all = SIZE(index_to_cell_all, 2)
+      print*, n_img_all
+      CPASSERT(n_img_scf == SIZE(matrix_ks_kp, 2))
+      NULLIFY (moments_rs_img)
+      CALL dbcsr_allocate_matrix_set(moments_rs_img, 3, n_img_all)
+      CALL build_local_moment_matrix_rs_img(qs_env, moments_rs_img, ref_point=rcc)
+
+      ALLOCATE (S_rs(1, nao, nao, n_img_all), source=0.0_dp)
+      ALLOCATE (H_rs(1, nao, nao, n_img_all), source=0.0_dp)
+      ALLOCATE (D_rs(3, nao, nao, n_img_all), source=0.0_dp)
+      ALLOCATE (dS_dk_i(nao, nao), dH_dk_i(nao, nao), source=z_zero)
+      ALLOCATE (C_dS_C(nao, nao), C_dH_C(nao, nao), source=z_zero)
+      ALLOCATE (CDC(nao, nao), dip(3, nao, nao), source=z_zero)
+      ALLOCATE (S_k(nao, nao), H_k(nao, nao), source=z_zero)
+      ALLOCATE (C_k(nao, nao), D_k(nao, nao), source=z_zero)
       ALLOCATE (eigenvals(nao), source=0.0_dp)
-      ALLOCATE (eigenvectors(mat_rows, mat_cols), source=z_zero)
       ALLOCATE (bc(3, nao), source=0.0_dp)
 
-      CALL replicate_rs_matrices(matrix_s, kpoints_scf, s_matrix, cell_to_index_all)
-      CALL replicate_rs_matrices(matrix_ks, kpoints_scf, h_matrix, cell_to_index_all)
-      CALL replicate_rs_matrices(aod, kpoints_all, d_matrix, cell_to_index_all)
+      CALL replicate_rs_matrices(matrix_s_kp, kpoints_scf, S_rs, cell_to_index_all)
+      CALL replicate_rs_matrices(matrix_ks_kp, kpoints_scf, H_rs, cell_to_index_all)
+      CALL replicate_rs_matrices(moments_rs_img, kpoints_all, D_rs, cell_to_index_all)
 
       kpset => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%MOMENTS%KPOINT_SET")
       kpnts => section_vals_get_subs_vals(qs_env%input, "DFT%PRINT%MOMENTS%KPOINTS")
@@ -3765,29 +3757,25 @@ CONTAINS
             xkpc = MATMUL(TRANSPOSE(h_inv), xkp)*twopi/angstrom
 
             ! S^R -> S(k)
-            CALL rs_to_kp(s_matrix(1, :, :, :), s_trafo, index_to_cell_all, xkp)
+            CALL rs_to_kp(S_rs(1, :, :, :), S_k, index_to_cell_all, xkp)
 
             ! H^R -> H(k)
-            CALL rs_to_kp(h_matrix(1, :, :, :), h_trafo, index_to_cell_all, xkp)
+            CALL rs_to_kp(H_rs(1, :, :, :), H_k, index_to_cell_all, xkp)
 
-            CALL geeig_right(h_trafo, s_trafo, eigenvals, eigenvectors, eps_eigval_mat_s)
+            CALL geeig_right(H_k, S_k, eigenvals, C_k, eps_eigval_mat_s)
             DO i = 1, 3
-               CALL rs_to_kp(s_matrix(1, :, :, :), s_k_trafo(i, :, :), index_to_cell_all, xkp, i, hmat)
-               CALL rs_to_kp(h_matrix(1, :, :, :), h_k_trafo(i, :, :), index_to_cell_all, xkp, i, hmat)
-               CALL rs_to_kp(d_matrix(i, :, :, :), d_k_trafo(i, :, :), index_to_cell_all, xkp)
-            END DO
-            DO i = 1, 3
-               CALL gemm_square(eigenvectors, 'C', s_k_trafo(i, :, :), 'N', eigenvectors, 'N', csc(i, :, :))
-               CALL gemm_square(eigenvectors, 'C', h_k_trafo(i, :, :), 'N', eigenvectors, 'N', chc(i, :, :))
-               CALL gemm_square(eigenvectors, 'C', d_k_trafo(i, :, :), 'N', eigenvectors, 'N', cdc(i, :, :))
-            END DO
-            DO i = 1, 3
-               DO j = 1, mat_cols
-                  DO k = 1, mat_rows
+               CALL rs_to_kp(S_rs(1, :, :, :), dS_dk_i, index_to_cell_all, xkp, i, hmat)
+               CALL rs_to_kp(H_rs(1, :, :, :), dH_dk_i, index_to_cell_all, xkp, i, hmat)
+               CALL rs_to_kp(D_rs(i, :, :, :), D_k(:, :), index_to_cell_all, xkp)
+               CALL gemm_square(C_k, 'C', dS_dk_i, 'N', C_k, 'N', C_dS_C)
+               CALL gemm_square(C_k, 'C', dH_dk_i, 'N', C_k, 'N', C_dH_C)
+               CALL gemm_square(C_k, 'C', D_k, 'N', C_k, 'N', CDC)
+               DO j = 1, nao
+                  DO k = 1, nao
                      IF (j /= k) THEN
-                        chc(i, j, k) = -gaussi*chc(i, j, k)/(eigenvals(j) - eigenvals(k))
-                        csc(i, j, k) = gaussi*eigenvals(j)*csc(i, j, k)/(eigenvals(j) - eigenvals(k))
-                        dip(i, j, k) = chc(i, j, k) + cdc(i, j, k) + csc(i, j, k)
+                        dip(i, j, k) = - gaussi*C_dH_C(j, k)/(eigenvals(j) - eigenvals(k)) &
+                                       + gaussi*eigenvals(j)*C_dS_C(j,k)/(eigenvals(j) - eigenvals(k)) &
+                                       + CDC(j, k)
                      END IF
                   END DO
                END DO
@@ -3797,8 +3785,8 @@ CONTAINS
             IF (unit_number > 0) WRITE (unit_number, "(2X,A)") "n  n'      Re(dx)      Im(dx)  ", &
                "    Re(dy)      Im(dy)      Re(dz)      Im(dz)"
             IF (unit_number > 0) THEN
-               DO j = 1, mat_cols
-                  DO k = 1, mat_rows
+               DO j = 1, nao
+                  DO k = 1, nao
                      IF (j /= k) THEN
                         WRITE (unit_number, "(2I3,1X,6G12.4)") j, k, dip(1, j, k), &
                            dip(2, j, k), dip(3, j, k)
@@ -3808,8 +3796,8 @@ CONTAINS
             END IF
             bc = 0
             DO i = 1, 3
-               DO j = 1, mat_cols
-                  DO k = 1, mat_rows
+               DO j = 1, nao
+                  DO k = 1, nao
                      IF (k /= j) THEN
                         bc(i, j) = bc(i, j) + 2*AIMAG(dip(1 + MOD(i, 3), j, k)*dip(1 + MOD(i + 1, 3), k, j))
                      END IF
@@ -3817,7 +3805,7 @@ CONTAINS
                END DO
             END DO
             DO i = 1, 3
-               DO j = 1, mat_cols
+               DO j = 1, nao
                   WRITE (unit_number, "(2I3,1X,1G12.6)") i, j, bc(i, j)
                END DO
             END DO
@@ -3825,19 +3813,9 @@ CONTAINS
          IF (explicit_kpset .OR. explicit_kpnts) CALL kpoint_release(kpoint)
          IF (explicit_kpset) DEALLOCATE (spname)
       END DO
-      DEALLOCATE (bigj)
-      DEALLOCATE (eigenvals)
-      DEALLOCATE (bc)
-      DEALLOCATE (s_matrix)
-      DEALLOCATE (h_matrix)
-      DEALLOCATE (d_matrix)
-      DEALLOCATE (s_k_trafo, h_k_trafo)
-      DEALLOCATE (d_k_trafo)
-      DEALLOCATE (csc, chc)
-      DEALLOCATE (cdc, dip)
-      DEALLOCATE (s_trafo, h_trafo)
-      DEALLOCATE (eigenvectors)
-      CALL dbcsr_deallocate_matrix_set(aod)
+      DEALLOCATE (eigenvals, bc, S_rs, H_rs, D_rs, dS_dk_i, dH_dk_i, D_k)
+      DEALLOCATE (C_dS_C, C_dH_C, CDC, dip, S_k, H_k, C_k)
+      CALL dbcsr_deallocate_matrix_set(moments_rs_img)
 
       CALL timestop(handle)
    END SUBROUTINE qs_moment_kpoints
