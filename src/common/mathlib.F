@@ -2089,7 +2089,8 @@ CONTAINS
       COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)      :: A_in, B_in
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eigenvalues
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: eigenvectors
-      REAL(KIND=dp), INTENT(IN)                          :: epseig
+      REAL(KIND=dp)                                      :: eps
+      REAL(KIND=dp), INTENT(IN), OPTIONAL                :: epseig
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'geeig_right'
       COMPLEX(KIND=dp), PARAMETER :: cone = CMPLX(1.0_dp, 0.0_dp, KIND=dp), &
@@ -2110,6 +2111,8 @@ CONTAINS
       ALLOCATE (work(nao, nao), B(nao, nao), A(nao, nao))
       A(:, :) = A_in(:, :)
       B(:, :) = B_in(:, :)
+      eps = -1.0_dp
+      IF (PRESENT(epseig)) eps=epseig
 
       ! Diagonalize -S matrix, this way the NULL space is at the end of the spectrum
       B = -B
@@ -2117,7 +2120,7 @@ CONTAINS
       evals(:) = -evals(:)
       nc = nao
       DO i = 1, nao
-         IF (evals(i) < epseig) THEN
+         IF (evals(i) < eps) THEN
             nc = i - 1
             EXIT
          END IF
