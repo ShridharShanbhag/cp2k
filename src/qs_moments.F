@@ -3689,13 +3689,6 @@ CONTAINS
 
       ALLOCATE (S_rs(1, nao, nao, n_img_all), H_rs(1, nao, nao, n_img_all), source=0.0_dp)
       ALLOCATE (D_rs(3, nao, nao, n_img_all), source=0.0_dp)
-      ALLOCATE (dS_dk_i(nao, nao), dH_dk_i(nao, nao), source=z_zero)
-      ALLOCATE (C_dS_C(nao, nao), C_dH_C(nao, nao), source=z_zero)
-      ALLOCATE (CDC(nao, nao), dip(3, nao, nao), source=z_zero)
-      ALLOCATE (S_k(nao, nao), H_k(nao, nao), source=z_zero)
-      ALLOCATE (C_k(nao, nao), D_k(nao, nao), source=z_zero)
-      ALLOCATE (eigenvals(nao), source=0.0_dp)
-      ALLOCATE (bc(3, nao), source=0.0_dp)
 
       ! Convert real-space dbcsr matrices into arrays
       CALL replicate_rs_matrices(matrix_s_kp, kpoints_scf, S_rs, cell_to_index_all)
@@ -3706,7 +3699,17 @@ CONTAINS
          '!-----------------------------------------------------------------------------!'
       IF (unit_number > 0) WRITE (unit_number, "(T22,A)") "Periodic Dipole Matrix Elements"
 
+      !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ikp, xkpc, S_k, H_k, eigenvals, C_k,&
+      !$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC) &
+      !$OMP SHARED(nkp, xkp, h_inv, S_rs, H_rs, D_rs, index_to_cell_all, hmat, nao, unit_number)
       DO ikp = 1, nkp
+         ALLOCATE (dS_dk_i(nao, nao), dH_dk_i(nao, nao), source=z_zero)
+         ALLOCATE (C_dS_C(nao, nao), C_dH_C(nao, nao), source=z_zero)
+         ALLOCATE (CDC(nao, nao), dip(3, nao, nao), source=z_zero)
+         ALLOCATE (S_k(nao, nao), H_k(nao, nao), source=z_zero)
+         ALLOCATE (C_k(nao, nao), D_k(nao, nao), source=z_zero)
+         ALLOCATE (eigenvals(nao), source=0.0_dp)
+         ALLOCATE (bc(3, nao), source=0.0_dp)
          xkpc = MATMUL(TRANSPOSE(h_inv), xkp(:, ikp))*twopi/angstrom
 
          ! S^R -> S(k)
@@ -3776,9 +3779,11 @@ CONTAINS
                END DO
             END DO
          END IF
+         DEALLOCATE (eigenvals, bc, dS_dk_i, dH_dk_i, D_k)
+         DEALLOCATE (C_dS_C, C_dH_C, CDC, dip, S_k, H_k, C_k)
       END DO
-      DEALLOCATE (eigenvals, bc, S_rs, H_rs, D_rs, dS_dk_i, dH_dk_i, D_k)
-      DEALLOCATE (C_dS_C, C_dH_C, CDC, dip, S_k, H_k, C_k)
+      !$OMP END PARALLEL DO
+      DEALLOCATE (S_rs, H_rs, D_rs)
       CALL dbcsr_deallocate_matrix_set(moments_rs_img)
 
       CALL timestop(handle)
