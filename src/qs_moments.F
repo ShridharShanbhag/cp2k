@@ -3697,6 +3697,7 @@ CONTAINS
       ALLOCATE (eigenvals(nao), source=0.0_dp)
       ALLOCATE (bc(3, nao), source=0.0_dp)
 
+      ! Convert real-space dbcsr matrices into arrays
       CALL replicate_rs_matrices(matrix_s_kp, kpoints_scf, S_rs, cell_to_index_all)
       CALL replicate_rs_matrices(matrix_ks_kp, kpoints_scf, H_rs, cell_to_index_all)
       CALL replicate_rs_matrices(moments_rs_img, kpoints_all, D_rs, cell_to_index_all)
@@ -3714,14 +3715,24 @@ CONTAINS
          ! H^R -> H(k)
          CALL rs_to_kp(H_rs(1, :, :, :), H_k, index_to_cell_all, xkp(:, ikp))
 
+         ! Diagonalize H(k)C(k) = S(k)C(k)ε(k)
          CALL geeig_right(H_k, S_k, eigenvals, C_k)
          DO i_dir = 1, 3
+            ! ΣiR S^R e^(ikR) = ∇ S(k)
             CALL rs_to_kp(S_rs(1, :, :, :), dS_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
+            ! ΣiR H^R e^(ikR) = ∇ H(k)
             CALL rs_to_kp(H_rs(1, :, :, :), dH_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
+            ! ΣD^R e^(ikR) = D(k)
             CALL rs_to_kp(D_rs(i_dir, :, :, :), D_k(:, :), index_to_cell_all, xkp(:, ikp))
+            ! Basis transform to Kohn-Sham basis
+            ! Compute (C^t)∇ S C
             CALL gemm_square(C_k, 'C', dS_dk_i, 'N', C_k, 'N', C_dS_C)
+            ! Compute (C^t)∇ H C
             CALL gemm_square(C_k, 'C', dH_dk_i, 'N', C_k, 'N', C_dH_C)
+            ! Compute (C^t) D C
             CALL gemm_square(C_k, 'C', D_k, 'N', C_k, 'N', CDC)
+            ! Compute the dipole
+            ! d_nm (k) = -i/(ε(n)-ε(m))(C^t)(dH(k)/dk)C+ i ε(n)/(ε(n)-ε(m)) (C^t)(dS(k)/dk)C+ (C^t)D(k)C
             DO i = 1, nao
                DO j = 1, nao
                   IF (i /= j) THEN
@@ -3732,6 +3743,7 @@ CONTAINS
                END DO
             END DO
          END DO
+         ! Compute the berry curvature from the dipoles
          bc = 0
          DO i_dir = 1, 3
             DO i = 1, nao
@@ -3743,11 +3755,11 @@ CONTAINS
                END DO
             END DO
          END DO
-         IF (unit_number > 0) WRITE (unit_number, "(/,1X,A,I3,1X,A,1F12.6,A,1F12.6,A,1F12.6)") &
-            "Kpoint:", ikp, ", kx:", xkpc(1), ", ky:", xkpc(2), ", kz:", xkpc(3)
-         IF (unit_number > 0) WRITE (unit_number, "(2X,A)") "n  n'      Re(dx)      Im(dx)  ", &
-            "    Re(dy)      Im(dy)      Re(dz)      Im(dz)"
          IF (unit_number > 0) THEN
+            WRITE (unit_number, "(/,1X,A,I3,1X,A,1F12.6,A,1F12.6,A,1F12.6)") &
+            "Kpoint:", ikp, ", kx:", xkpc(1), ", ky:", xkpc(2), ", kz:", xkpc(3)
+            WRITE (unit_number, "(2X,A)") "n  m    Re(d_nm^x)  Im(d_nm^x)  &
+            & Re(d_nm^y)  Im(d_nm^y)  Re(d_nm^z)  Im(d_nm^z)"
             DO i = 1, nao
                DO j = 1, nao
                   IF (i /= j) THEN
@@ -3756,12 +3768,14 @@ CONTAINS
                   END IF
                END DO
             END DO
-         END IF
-         DO i_dir = 1, 3
-            DO i = 1, nao
-               WRITE (unit_number, "(2I3,1X,1G12.6)") i_dir, i, bc(i_dir, i)
+            WRITE (unit_number, "(2X,A)") "Berry Curvature From Dipole"
+            WRITE (unit_number, "(2X,A)") "Dir n"
+            DO i_dir = 1, 3
+               DO i = 1, nao
+                  WRITE (unit_number, "(2X,A,I3,1X,1G12.6)") "XYZ"(i_dir:i_dir), i, bc(i_dir, i)
+               END DO
             END DO
-         END DO
+         END IF
       END DO
       DEALLOCATE (eigenvals, bc, S_rs, H_rs, D_rs, dS_dk_i, dH_dk_i, D_k)
       DEALLOCATE (C_dS_C, C_dH_C, CDC, dip, S_k, H_k, C_k)
