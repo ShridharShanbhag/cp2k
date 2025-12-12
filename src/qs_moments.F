@@ -114,6 +114,8 @@ MODULE qs_moments
    USE rt_propagation_types,            ONLY: get_rtp,&
                                               rt_prop_type
    USE string_utilities,                ONLY: uppercase
+   USE OMP_LIB,                         ONLY: omp_get_num_threads,&
+                                              omp_get_thread_num
 #include "./base/base_uses.f90"
                                           
    IMPLICIT NONE
@@ -3622,19 +3624,21 @@ CONTAINS
       REAL(dp), DIMENSION(:), INTENT(IN), POINTER        :: ref_point
       INTEGER, INTENT(IN)                                :: unit_number
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_moment_kpoints'
-      COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: C_k, H_k, S_k, D_k
-      COMPLEX(KIND=dp), DIMENSION(:, :), POINTER         :: CDC, C_dH_C, C_dS_C, &
+      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE         :: C_k, H_k, S_k, D_k
+      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE         :: CDC, C_dH_C, C_dS_C, &
                                                             dH_dk_i, dS_dk_i
-      COMPLEX(KIND=dp), DIMENSION(:, :, :), POINTER      :: dip
-      INTEGER                                            :: handle, i_dir, ikp, i, j, nkp, &
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE      :: dip
+      COMPLEX(KIND=dp), DIMENSION(:, :, :, :), ALLOCATABLE      :: dipole_to_print
+      INTEGER                                            :: handle,ikp_in_batch, i_dir, ikp, i, j, nkp, &
                                                             n_img_scf, n_img_all, n_rep, nao, npline
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell_all
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index_all
       REAL(KIND=dp), DIMENSION(3)                        :: rcc, xkpc
       REAL(KIND=dp), DIMENSION(3, 3)                     :: h_inv, hmat
-      REAL(KIND=dp), DIMENSION(:), POINTER               :: eigenvals
+      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE               :: eigenvals
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: bc, xkp
-      REAL(KIND=dp), DIMENSION(:, :, :, :), POINTER      :: D_rs, H_rs, S_rs
+      REAL(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE        :: bc_to_print
+      REAL(KIND=dp), DIMENSION(:, :, :, :), ALLOCATABLE      :: D_rs, H_rs, S_rs
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: moments_rs_img, matrix_ks_kp, matrix_s_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -3643,7 +3647,6 @@ CONTAINS
       TYPE(mp_para_env_type), POINTER                    :: para_env
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
          POINTER                                         :: sab_all, sab_orb
-      TYPE(section_vals_type), POINTER                   :: kpnts, kpset
 
       CALL timeset(routineN, handle)
 
@@ -3699,17 +3702,20 @@ CONTAINS
          '!-----------------------------------------------------------------------------!'
       IF (unit_number > 0) WRITE (unit_number, "(T22,A)") "Periodic Dipole Matrix Elements"
 
+      ALLOCATE (dS_dk_i(nao, nao), dH_dk_i(nao, nao), source=z_zero)
+      ALLOCATE (C_dS_C(nao, nao), C_dH_C(nao, nao), source=z_zero)
+      ALLOCATE (CDC(nao, nao), dip(3, nao, nao), source=z_zero)
+      ALLOCATE (S_k(nao, nao), H_k(nao, nao), source=z_zero)
+      ALLOCATE (C_k(nao, nao), D_k(nao, nao), source=z_zero)
+      ALLOCATE (eigenvals(nao), source=0.0_dp)
+      ALLOCATE (bc(3, nao), source=0.0_dp)
+      ALLOCATE(dipole_to_print(omp_get_num_threads(),3, nao, nao), source=z_zero)
+      ALLOCATE(bc_to_print(omp_get_num_threads(),3, nao), source=0.0_dp)
       !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ikp, xkpc, S_k, H_k, eigenvals, C_k,&
-      !$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC) &
-      !$OMP SHARED(nkp, xkp, h_inv, S_rs, H_rs, D_rs, index_to_cell_all, hmat, nao, unit_number)
+      !$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC, dipole_to_print, bc_to_print) &
+      !$OMP SHARED(para_env,&
+      !$OMP nkp, xkp, h_inv, S_rs, H_rs, D_rs, index_to_cell_all, hmat, nao, unit_number)
       DO ikp = 1, nkp
-         ALLOCATE (dS_dk_i(nao, nao), dH_dk_i(nao, nao), source=z_zero)
-         ALLOCATE (C_dS_C(nao, nao), C_dH_C(nao, nao), source=z_zero)
-         ALLOCATE (CDC(nao, nao), dip(3, nao, nao), source=z_zero)
-         ALLOCATE (S_k(nao, nao), H_k(nao, nao), source=z_zero)
-         ALLOCATE (C_k(nao, nao), D_k(nao, nao), source=z_zero)
-         ALLOCATE (eigenvals(nao), source=0.0_dp)
-         ALLOCATE (bc(3, nao), source=0.0_dp)
          xkpc = MATMUL(TRANSPOSE(h_inv), xkp(:, ikp))*twopi/angstrom
 
          ! S^R -> S(k)
@@ -3758,31 +3764,49 @@ CONTAINS
                END DO
             END DO
          END DO
-         IF (unit_number > 0) THEN
-            WRITE (unit_number, "(/,1X,A,I3,1X,A,1F12.6,A,1F12.6,A,1F12.6)") &
-            "Kpoint:", ikp, ", kx:", xkpc(1), ", ky:", xkpc(2), ", kz:", xkpc(3)
-            WRITE (unit_number, "(2X,A)") "n  m    Re(d_nm^x)  Im(d_nm^x)  &
-            & Re(d_nm^y)  Im(d_nm^y)  Re(d_nm^z)  Im(d_nm^z)"
-            DO i = 1, nao
-               DO j = 1, nao
-                  IF (i /= j) THEN
-                     WRITE (unit_number, "(2I3,1X,6G12.4)") i, j, dip(1, i, j), &
-                        dip(2, i, j), dip(3, i, j)
-                  END IF
-               END DO
-            END DO
-            WRITE (unit_number, "(2X,A)") "Berry Curvature From Dipole"
-            WRITE (unit_number, "(2X,A)") "Dir n"
-            DO i_dir = 1, 3
+         print*, "ikp", ikp, omp_get_thread_num(), omp_get_num_threads(), unit_number
+         DO ikp_in_batch = 1, omp_get_thread_num()
+            IF (ikp_in_batch==ikp) THEN
+               dipole_to_print(ikp_in_batch,:,:,:) = dip(:,:,:)
+               bc_to_print(ikp_in_batch,:,:) = bc(:,:)
+            ELSE
+               dipole_to_print(ikp_in_batch,:,:,:) = z_zero
+               bc_to_print(ikp_in_batch,:,:) = 0.0_dp
+            END IF
+         END DO
+         CALL para_env%sum(dipole_to_print)
+         CALL para_env%sum(bc_to_print)
+         DO ikp_in_batch = 1, omp_get_thread_num()
+            IF (unit_number > 0) THEN
+               WRITE (unit_number, "(/,1X,A,I3,1X,A,1F12.6,A,1F12.6,A,1F12.6)") &
+               "Kpoint:", ikp, ", kx:", xkpc(1), ", ky:", xkpc(2), ", kz:", xkpc(3)
+               WRITE (unit_number, "(2X,A)") "n  m    Re(d_nm^x)  Im(d_nm^x)  &
+               & Re(d_nm^y)  Im(d_nm^y)  Re(d_nm^z)  Im(d_nm^z)"
                DO i = 1, nao
-                  WRITE (unit_number, "(2X,A,I3,1X,1G12.6)") "XYZ"(i_dir:i_dir), i, bc(i_dir, i)
+                  DO j = 1, nao
+                     IF (i /= j) THEN
+                        WRITE (unit_number, "(2I3,1X,6G12.4)") i, j, &
+                           dipole_to_print(ikp_in_batch,1, i, j), &
+                           dipole_to_print(ikp_in_batch,2, i, j), &
+                           dipole_to_print(ikp_in_batch,3, i, j)
+                     END IF
+                  END DO
                END DO
-            END DO
-         END IF
-         DEALLOCATE (eigenvals, bc, dS_dk_i, dH_dk_i, D_k)
-         DEALLOCATE (C_dS_C, C_dH_C, CDC, dip, S_k, H_k, C_k)
+               WRITE (unit_number, "(2X,A)") "Berry Curvature From Dipole"
+               WRITE (unit_number, "(2X,A)") "Dir n"
+               DO i_dir = 1, 3
+                  DO i = 1, nao
+                     WRITE (unit_number, "(2X,A,I3,1X,1G12.6)") &
+                        "XYZ"(i_dir:i_dir), i, bc_to_print(ikp_in_batch,i_dir, i)
+                  END DO
+               END DO
+            END IF
+         END DO
       END DO
       !$OMP END PARALLEL DO
+      DEALLOCATE(dipole_to_print, bc_to_print)
+      DEALLOCATE (eigenvals, bc, dS_dk_i, dH_dk_i, D_k)
+      DEALLOCATE (C_dS_C, C_dH_C, CDC, dip, S_k, H_k, C_k)
       DEALLOCATE (S_rs, H_rs, D_rs)
       CALL dbcsr_deallocate_matrix_set(moments_rs_img)
 
