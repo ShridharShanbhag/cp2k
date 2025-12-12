@@ -3627,17 +3627,19 @@ CONTAINS
       COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE         :: C_k, H_k, S_k, D_k
       COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE         :: CDC, C_dH_C, C_dS_C, &
                                                             dH_dk_i, dS_dk_i
-      COMPLEX(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE      :: dip
-      COMPLEX(KIND=dp), DIMENSION(:, :, :, :), ALLOCATABLE      :: dipole_to_print
+      COMPLEX(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE  :: dip, dipole_to_print
+      COMPLEX(KIND=dp), DIMENSION(:, :, :, :), ALLOCATABLE  :: dipole_to_store
       INTEGER                                            :: handle,ikp_in_batch, i_dir, ikp, i, j, nkp, &
-                                                            n_img_scf, n_img_all, n_rep, nao, npline
+                                                            n_img_scf, n_img_all, n_rep, nao, npline, &
+                                                            num_pe, num_copy, mepos
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell_all
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index_all
       REAL(KIND=dp), DIMENSION(3)                        :: rcc, xkpc
       REAL(KIND=dp), DIMENSION(3, 3)                     :: h_inv, hmat
       REAL(KIND=dp), DIMENSION(:), ALLOCATABLE               :: eigenvals
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: bc, xkp
-      REAL(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE        :: bc_to_print
+      REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: bc_to_print
+      REAL(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE        :: bc_to_store
       REAL(KIND=dp), DIMENSION(:, :, :, :), ALLOCATABLE      :: D_rs, H_rs, S_rs
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: moments_rs_img, matrix_ks_kp, matrix_s_kp
@@ -3702,6 +3704,9 @@ CONTAINS
          '!-----------------------------------------------------------------------------!'
       IF (unit_number > 0) WRITE (unit_number, "(T22,A)") "Periodic Dipole Matrix Elements"
 
+      mepos = para_env%mepos
+      num_pe = para_env%num_pe
+      num_copy = CEILING(REAL(nkp)/num_pe)
       ALLOCATE (dS_dk_i(nao, nao), dH_dk_i(nao, nao), source=z_zero)
       ALLOCATE (C_dS_C(nao, nao), C_dH_C(nao, nao), source=z_zero)
       ALLOCATE (CDC(nao, nao), dip(3, nao, nao), source=z_zero)
@@ -3709,101 +3714,106 @@ CONTAINS
       ALLOCATE (C_k(nao, nao), D_k(nao, nao), source=z_zero)
       ALLOCATE (eigenvals(nao), source=0.0_dp)
       ALLOCATE (bc(3, nao), source=0.0_dp)
-      ALLOCATE(dipole_to_print(omp_get_num_threads(),3, nao, nao), source=z_zero)
-      ALLOCATE(bc_to_print(omp_get_num_threads(),3, nao), source=0.0_dp)
+      ALLOCATE(dipole_to_store(num_copy, 3, nao, nao), source=z_zero)
+      ALLOCATE(bc_to_store(num_copy, 3, nao), source=0.0_dp)
       !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ikp, xkpc, S_k, H_k, eigenvals, C_k,&
-      !$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC, dipole_to_print, bc_to_print) &
-      !$OMP SHARED(para_env,&
+      !$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC) &
+      !$OMP SHARED(num_pe, mepos,dipole_to_store, bc_to_store,&
       !$OMP nkp, xkp, h_inv, S_rs, H_rs, D_rs, index_to_cell_all, hmat, nao, unit_number)
       DO ikp = 1, nkp
-         xkpc = MATMUL(TRANSPOSE(h_inv), xkp(:, ikp))*twopi/angstrom
+         IF (mod(ikp-1, num_pe) == mepos) THEN
 
-         ! S^R -> S(k)
-         CALL rs_to_kp(S_rs(1, :, :, :), S_k, index_to_cell_all, xkp(:, ikp))
+            ! S^R -> S(k)
+            CALL rs_to_kp(S_rs(1, :, :, :), S_k, index_to_cell_all, xkp(:, ikp))
 
-         ! H^R -> H(k)
-         CALL rs_to_kp(H_rs(1, :, :, :), H_k, index_to_cell_all, xkp(:, ikp))
+            ! H^R -> H(k)
+            CALL rs_to_kp(H_rs(1, :, :, :), H_k, index_to_cell_all, xkp(:, ikp))
 
-         ! Diagonalize H(k)C(k) = S(k)C(k)ε(k)
-         CALL geeig_right(H_k, S_k, eigenvals, C_k)
-         DO i_dir = 1, 3
-            ! ΣiR S^R e^(ikR) = ∇ S(k)
-            CALL rs_to_kp(S_rs(1, :, :, :), dS_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
-            ! ΣiR H^R e^(ikR) = ∇ H(k)
-            CALL rs_to_kp(H_rs(1, :, :, :), dH_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
-            ! ΣD^R e^(ikR) = D(k)
-            CALL rs_to_kp(D_rs(i_dir, :, :, :), D_k(:, :), index_to_cell_all, xkp(:, ikp))
-            ! Basis transform to Kohn-Sham basis
-            ! Compute (C^t)∇ S C
-            CALL gemm_square(C_k, 'C', dS_dk_i, 'N', C_k, 'N', C_dS_C)
-            ! Compute (C^t)∇ H C
-            CALL gemm_square(C_k, 'C', dH_dk_i, 'N', C_k, 'N', C_dH_C)
-            ! Compute (C^t) D C
-            CALL gemm_square(C_k, 'C', D_k, 'N', C_k, 'N', CDC)
-            ! Compute the dipole
-            ! d_nm (k) = -i/(ε(n)-ε(m))(C^t)(dH(k)/dk)C+ i ε(n)/(ε(n)-ε(m)) (C^t)(dS(k)/dk)C+ (C^t)D(k)C
-            DO i = 1, nao
-               DO j = 1, nao
-                  IF (i /= j) THEN
-                     dip(i_dir, i, j) = - gaussi*C_dH_C(i, j)/(eigenvals(i) - eigenvals(j)) &
-                                    + gaussi*eigenvals(i)*C_dS_C(i,j)/(eigenvals(i) - eigenvals(j)) &
-                                    + CDC(i, j)
-                  END IF
-               END DO
-            END DO
-         END DO
-         ! Compute the berry curvature from the dipoles
-         bc = 0
-         DO i_dir = 1, 3
-            DO i = 1, nao
-               DO j = 1, nao
-                  IF (j /= i) THEN
-                     bc(i_dir, i) = bc(i_dir, i) &
-                        + 2*AIMAG(dip(1 + MOD(i_dir, 3), i, j)*dip(1 + MOD(i_dir + 1, 3), j, i))
-                  END IF
-               END DO
-            END DO
-         END DO
-         print*, "ikp", ikp, omp_get_thread_num(), omp_get_num_threads(), unit_number
-         DO ikp_in_batch = 1, omp_get_thread_num()
-            IF (ikp_in_batch==ikp) THEN
-               dipole_to_print(ikp_in_batch,:,:,:) = dip(:,:,:)
-               bc_to_print(ikp_in_batch,:,:) = bc(:,:)
-            ELSE
-               dipole_to_print(ikp_in_batch,:,:,:) = z_zero
-               bc_to_print(ikp_in_batch,:,:) = 0.0_dp
-            END IF
-         END DO
-         CALL para_env%sum(dipole_to_print)
-         CALL para_env%sum(bc_to_print)
-         DO ikp_in_batch = 1, omp_get_thread_num()
-            IF (unit_number > 0) THEN
-               WRITE (unit_number, "(/,1X,A,I3,1X,A,1F12.6,A,1F12.6,A,1F12.6)") &
-               "Kpoint:", ikp, ", kx:", xkpc(1), ", ky:", xkpc(2), ", kz:", xkpc(3)
-               WRITE (unit_number, "(2X,A)") "n  m    Re(d_nm^x)  Im(d_nm^x)  &
-               & Re(d_nm^y)  Im(d_nm^y)  Re(d_nm^z)  Im(d_nm^z)"
+            ! Diagonalize H(k)C(k) = S(k)C(k)ε(k)
+            CALL geeig_right(H_k, S_k, eigenvals, C_k)
+            DO i_dir = 1, 3
+               ! ΣiR S^R e^(ikR) = ∇ S(k)
+               CALL rs_to_kp(S_rs(1, :, :, :), dS_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
+               ! ΣiR H^R e^(ikR) = ∇ H(k)
+               CALL rs_to_kp(H_rs(1, :, :, :), dH_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
+               ! ΣD^R e^(ikR) = D(k)
+               CALL rs_to_kp(D_rs(i_dir, :, :, :), D_k(:, :), index_to_cell_all, xkp(:, ikp))
+               ! Basis transform to Kohn-Sham basis
+               ! Compute (C^t)∇ S C
+               CALL gemm_square(C_k, 'C', dS_dk_i, 'N', C_k, 'N', C_dS_C)
+               ! Compute (C^t)∇ H C
+               CALL gemm_square(C_k, 'C', dH_dk_i, 'N', C_k, 'N', C_dH_C)
+               ! Compute (C^t) D C
+               CALL gemm_square(C_k, 'C', D_k, 'N', C_k, 'N', CDC)
+               ! Compute the dipole
+               ! d_nm (k) = -i/(ε(n)-ε(m))(C^t)(dH(k)/dk)C+ i ε(n)/(ε(n)-ε(m)) (C^t)(dS(k)/dk)C+ (C^t)D(k)C
                DO i = 1, nao
                   DO j = 1, nao
                      IF (i /= j) THEN
-                        WRITE (unit_number, "(2I3,1X,6G12.4)") i, j, &
-                           dipole_to_print(ikp_in_batch,1, i, j), &
-                           dipole_to_print(ikp_in_batch,2, i, j), &
-                           dipole_to_print(ikp_in_batch,3, i, j)
+                        dip(i_dir, i, j) = - gaussi*C_dH_C(i, j)/(eigenvals(i) - eigenvals(j)) &
+                                       + gaussi*eigenvals(i)*C_dS_C(i,j)/(eigenvals(i) - eigenvals(j)) &
+                                       + CDC(i, j)
                      END IF
                   END DO
                END DO
-               WRITE (unit_number, "(2X,A)") "Berry Curvature From Dipole"
-               WRITE (unit_number, "(2X,A)") "Dir n"
-               DO i_dir = 1, 3
-                  DO i = 1, nao
-                     WRITE (unit_number, "(2X,A,I3,1X,1G12.6)") &
-                        "XYZ"(i_dir:i_dir), i, bc_to_print(ikp_in_batch,i_dir, i)
+            END DO
+            ! Compute the berry curvature from the dipoles
+            bc = 0
+            DO i_dir = 1, 3
+               DO i = 1, nao
+                  DO j = 1, nao
+                     IF (j /= i) THEN
+                        bc(i_dir, i) = bc(i_dir, i) &
+                           + 2*AIMAG(dip(1 + MOD(i_dir, 3), i, j)*dip(1 + MOD(i_dir + 1, 3), j, i))
+                     END IF
                   END DO
                END DO
-            END IF
-         END DO
+            END DO
+            !print*, "ikp", ikp, omp_get_thread_num(), omp_get_num_threads(), unit_number
+            dipole_to_store(CEILING(REAL(ikp)/num_pe),:,:,:) = dip(:,:,:)
+            bc_to_store(CEILING(REAL(ikp)/num_pe),:,:) = bc(:,:)
+         END IF
       END DO
       !$OMP END PARALLEL DO
+      ALLOCATE(dipole_to_print(3, nao, nao), source=z_zero)
+      ALLOCATE(bc_to_print(3, nao), source=0.0_dp)
+      !print*, "mepos, num_pe", mepos, num_pe
+      DO ikp = 1, nkp
+         dipole_to_print=0.0_dp
+         bc_to_print=0.0_dp
+         IF (mod(ikp-1, num_pe) == mepos) THEN
+            dipole_to_print(:,:,:)=dipole_to_store(CEILING(REAL(ikp)/num_pe),:,:,:)
+            bc_to_print(:,:)=bc_to_store(CEILING(REAL(ikp)/num_pe),:,:)
+         ENDIF
+         CALL para_env%sum(dipole_to_print)
+         CALL para_env%sum(bc_to_print)
+         IF (unit_number>0) THEN
+            xkpc = MATMUL(TRANSPOSE(h_inv), xkp(:, ikp))*twopi/angstrom
+            WRITE (unit_number, "(/,1X,A,I3,1X,A,1F12.6,A,1F12.6,A,1F12.6)") &
+            "Kpoint:", ikp, ", kx:", xkpc(1), ", ky:", xkpc(2), ", kz:", xkpc(3)
+            !WRITE (unit_number, *) "ikp", ikp, "xkpc", xkpc
+            WRITE (unit_number, "(2X,A)") "n  m    Re(d_nm^x)  Im(d_nm^x)  &
+            & Re(d_nm^y)  Im(d_nm^y)  Re(d_nm^z)  Im(d_nm^z)"
+            DO i = 1, nao
+               DO j = 1, nao
+                  IF (i /= j) THEN
+                     WRITE (unit_number, "(2I3,1X,6G12.4)") i, j, &
+                        dipole_to_print(1, i, j), &
+                        dipole_to_print(2, i, j), &
+                        dipole_to_print(3, i, j)
+                  END IF
+               END DO
+            END DO
+            WRITE (unit_number, "(2X,A)") "Berry Curvature From Dipole"
+            WRITE (unit_number, "(2X,A)") "Dir n"
+            DO i_dir = 1, 3
+               DO i = 1, nao
+                  WRITE (unit_number, "(2X,A,I3,1X,1G12.6)") &
+                     "XYZ"(i_dir:i_dir), i, bc_to_print(i_dir, i)
+               END DO
+            END DO
+         END IF
+      END DO
       DEALLOCATE(dipole_to_print, bc_to_print)
       DEALLOCATE (eigenvals, bc, dS_dk_i, dH_dk_i, D_k)
       DEALLOCATE (C_dS_C, C_dH_C, CDC, dip, S_k, H_k, C_k)
