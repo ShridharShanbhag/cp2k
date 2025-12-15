@@ -2089,7 +2089,6 @@ CONTAINS
       COMPLEX(kind=dp), DIMENSION(:, :), INTENT(IN)      :: A_in, B_in
       REAL(KIND=dp), DIMENSION(:), INTENT(OUT)           :: eigenvalues
       COMPLEX(KIND=dp), DIMENSION(:, :), INTENT(OUT)     :: eigenvectors
-      REAL(KIND=dp)                                      :: eps
       REAL(KIND=dp), INTENT(IN), OPTIONAL                :: epseig
 
       CHARACTER(len=*), PARAMETER                        :: routineN = 'geeig_right'
@@ -2100,6 +2099,7 @@ CONTAINS
       COMPLEX(kind=dp), ALLOCATABLE, DIMENSION(:, :)     :: A, B, work
       INTEGER                                            :: handle, i, icol, irow, lda, ldb, ldc, n, &
                                                             nao, nc, ncol, nmo, nx
+      REAL(KIND=dp)                                      :: eps
       REAL(KIND=dp), ALLOCATABLE, DIMENSION(:)           :: evals
 
       CALL timeset(routineN, handle)
@@ -2112,7 +2112,7 @@ CONTAINS
       A(:, :) = A_in(:, :)
       B(:, :) = B_in(:, :)
       eps = -1.0_dp
-      IF (PRESENT(epseig)) eps=epseig
+      IF (PRESENT(epseig)) eps = epseig
 
       ! Diagonalize -S matrix, this way the NULL space is at the end of the spectrum
       B = -B
