@@ -3739,7 +3739,7 @@ CONTAINS
             CALL rs_to_kp(S_rs(1, :, :, :), dS_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
             CALL rs_to_kp(H_rs(1, :, :, :), dH_dk_i, index_to_cell_all, xkp(:, ikp), i_dir, hmat)
 
-            ! Σ_R D^R e^(ikR) = D(k), D_mu,nu = <...|...|...>
+            ! Σ_R D^R e^(ikR) = D(k), D_μ,ν = <φ_μ|r|φ_ν>
             CALL rs_to_kp(D_rs(i_dir, :, :, :), D_k(:, :), index_to_cell_all, xkp(:, ikp))
 
             ! Basis transform to Kohn-Sham basis: (C^H) ∇ S C, (C^H) ∇ H C, (C^H) D C
