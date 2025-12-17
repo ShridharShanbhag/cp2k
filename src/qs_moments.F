@@ -3635,8 +3635,8 @@ CONTAINS
       INTEGER, INTENT(IN)                                :: unit_number
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_moment_kpoints'
       COMPLEX(KIND=dp)                                   :: phase
-      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE     :: C_k, H_k, S_k, D_k, id
-      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE     :: CDC, C_dH_C, C_dS_C, &
+      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE     :: C_k, H_k, S_k, D_k, &
+                                                            CDC, C_dH_C, C_dS_C, &
                                                             dH_dk_i, dS_dk_i
       COMPLEX(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE  :: dip, dipole_to_print
       COMPLEX(KIND=dp), DIMENSION(:, :, :, :), &
@@ -3724,7 +3724,6 @@ CONTAINS
       ALLOCATE (C_k(nao, nao), D_k(nao, nao), dipole_to_store(num_copy, 3, nao, nao), source=z_zero)
       ALLOCATE (eigenvals(nao), bc(3, nao), bc_to_store(num_copy, 3, nao), source=0.0_dp)
       ALLOCATE (realindex(nao))
-      ALLOCATE (id(nao, nao), source=z_zero)
 
       ! Calculate S(k) and H(k) at the Γ point
       ! S^R -> S(k=0), H^R -> H(k=0)
@@ -3742,7 +3741,7 @@ CONTAINS
       END DO
 
 !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ikp, S_k, H_k, eigenvals, C_k, &
-!$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC, phase, id) &
+!$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC, phase) &
 !$OMP SHARED(num_pe, mepos,dipole_to_store, bc_to_store, realindex, &
 !$OMP nkp, xkp, S_rs, H_rs, D_rs, index_to_cell_all, hmat, nao, unit_number)
       DO ikp = 1, nkp
@@ -3758,11 +3757,6 @@ CONTAINS
             phase=C_k(realindex(j), j)/ABS(C_k(realindex(j), j))
             C_k(:,j)=C_k(:,j)/phase
          END DO
-         print*,  "abs", SUM(ABS(C_k(:,1))**2), SUM(ABS(C_k(:,2))**2)
-         CALL gemm_square(C_k, 'C', S_k, 'N', C_k, 'N', id)
-         print*, "id", ikp, id
-         CALL gemm_square(C_k, 'C', H_k, 'N', C_k, 'N', id)
-         print*, "eps", ikp, id*evolt
 
          DO i_dir = 1, 3 ! d^x, d^y, d^z
 
