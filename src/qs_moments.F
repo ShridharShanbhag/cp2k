@@ -92,6 +92,7 @@ MODULE qs_moments
    USE particle_types, ONLY: particle_type
    USE physcon, ONLY: angstrom, &
                       bohr, &
+                      evolt, &
                       debye
    USE qs_environment_types, ONLY: get_qs_env, &
                                    qs_environment_type
@@ -3403,7 +3404,7 @@ CONTAINS
          special_pnts(:) = ""
          xkp(1:3, 1) = kspecial(1:3, 1)
          ikk = 1
-         special_pnts(ikk) = spname(ik)
+         special_pnts(ikk) = spname(1)
          DO ik = 2, n_ptr
             DO ip = 1, npline
                ikk = ikk + 1
@@ -3633,23 +3634,27 @@ CONTAINS
       REAL(dp), DIMENSION(:), INTENT(IN), POINTER        :: ref_point
       INTEGER, INTENT(IN)                                :: unit_number
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_moment_kpoints'
-      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE         :: C_k, H_k, S_k, D_k
-      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE         :: CDC, C_dH_C, C_dS_C, &
-                                                                dH_dk_i, dS_dk_i
+      COMPLEX(KIND=dp)                                   :: phase
+      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE     :: C_k, H_k, S_k, D_k, id
+      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE     :: CDC, C_dH_C, C_dS_C, &
+                                                            dH_dk_i, dS_dk_i
       COMPLEX(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE  :: dip, dipole_to_print
-      COMPLEX(KIND=dp), DIMENSION(:, :, :, :), ALLOCATABLE  :: dipole_to_store
+      COMPLEX(KIND=dp), DIMENSION(:, :, :, :), &
+         ALLOCATABLE                                     :: dipole_to_store
       INTEGER                                            :: handle, ikp_in_batch, i_dir, ikp, i, j, nkp, &
                                                             n_img_scf, n_img_all, n_rep, nao, npline, &
                                                             num_pe, num_copy, mepos
+      INTEGER, DIMENSION(:), POINTER                     :: realindex
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell_all
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index_all
-      REAL(KIND=dp), DIMENSION(3)                        :: rcc, xkpc
+      REAL(KIND=dp), DIMENSION(3)                        :: rcc
       REAL(KIND=dp), DIMENSION(3, 3)                     :: hmat
-      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE               :: eigenvals
+      REAL(KIND=dp), DIMENSION(:), ALLOCATABLE           :: eigenvals
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: bc, xkp
       REAL(KIND=dp), DIMENSION(:, :), ALLOCATABLE        :: bc_to_print
-      REAL(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE        :: bc_to_store
-      REAL(KIND=dp), DIMENSION(:, :, :, :), ALLOCATABLE      :: D_rs, H_rs, S_rs
+      REAL(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE     :: bc_to_store
+      REAL(KIND=dp), DIMENSION(:, :, :, :), &
+         ALLOCATABLE                                     :: D_rs, H_rs, S_rs
       TYPE(cell_type), POINTER                           :: cell
       TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: moments_rs_img, matrix_ks_kp, matrix_s_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
@@ -3659,7 +3664,7 @@ CONTAINS
       CHARACTER(LEN=default_string_length), &
          DIMENSION(:), POINTER                           :: special_pnts
       TYPE(neighbor_list_set_p_type), DIMENSION(:), &
-         POINTER                                         :: sab_all, sab_orb
+         POINTER                                         :: sab_all
 
       CALL timeset(routineN, handle)
 
@@ -3670,7 +3675,6 @@ CONTAINS
                       matrix_s_kp=matrix_s_kp, &
                       sab_all=sab_all, &
                       cell=cell, &
-                      sab_orb=sab_orb, &
                       kpoints=kpoints_scf, &
                       para_env=para_env, &
                       dft_control=dft_control, &
@@ -3719,9 +3723,27 @@ CONTAINS
       ALLOCATE (CDC(nao, nao), dip(3, nao, nao), S_k(nao, nao), H_k(nao, nao), source=z_zero)
       ALLOCATE (C_k(nao, nao), D_k(nao, nao), dipole_to_store(num_copy, 3, nao, nao), source=z_zero)
       ALLOCATE (eigenvals(nao), bc(3, nao), bc_to_store(num_copy, 3, nao), source=0.0_dp)
-!$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ikp, xkpc, S_k, H_k, eigenvals, C_k,&
-!$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC) &
-!$OMP SHARED(num_pe, mepos,dipole_to_store, bc_to_store,&
+      ALLOCATE (realindex(nao))
+      ALLOCATE (id(nao, nao), source=z_zero)
+
+      ! Calculate S(k) and H(k) at the Γ point
+      ! S^R -> S(k=0), H^R -> H(k=0)
+      CALL rs_to_kp(S_rs(1, :, :, :), S_k, index_to_cell_all, [0.0_dp,0.0_dp,0.0_dp])
+      CALL rs_to_kp(H_rs(1, :, :, :), H_k, index_to_cell_all, [0.0_dp,0.0_dp,0.0_dp])
+      CALL geeig_right(H_k, S_k, eigenvals, C_k)
+      DO j=1, nao
+         realindex(j) = 1
+         phase = C_k(1,j)
+         DO i=1, nao
+            IF (ABS(C_k(i,j))< ABS(phase)) CYCLE
+            realindex(j) = i
+            phase = C_k(i,j)
+         END DO
+      END DO
+
+!$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ikp, S_k, H_k, eigenvals, C_k, &
+!$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC, phase, id) &
+!$OMP SHARED(num_pe, mepos,dipole_to_store, bc_to_store, realindex, &
 !$OMP nkp, xkp, S_rs, H_rs, D_rs, index_to_cell_all, hmat, nao, unit_number)
       DO ikp = 1, nkp
          IF (mod(ikp - 1, num_pe) /= mepos) CYCLE
@@ -3732,6 +3754,15 @@ CONTAINS
 
          ! Diagonalize H(k)C(k) = S(k)C(k)ε(k)
          CALL geeig_right(H_k, S_k, eigenvals, C_k)
+         DO j=1, nao
+            phase=C_k(realindex(j), j)/ABS(C_k(realindex(j), j))
+            C_k(:,j)=C_k(:,j)/phase
+         END DO
+         print*,  "abs", SUM(ABS(C_k(:,1))**2), SUM(ABS(C_k(:,2))**2)
+         CALL gemm_square(C_k, 'C', S_k, 'N', C_k, 'N', id)
+         print*, "id", ikp, id
+         CALL gemm_square(C_k, 'C', H_k, 'N', C_k, 'N', id)
+         print*, "eps", ikp, id*evolt
 
          DO i_dir = 1, 3 ! d^x, d^y, d^z
 
