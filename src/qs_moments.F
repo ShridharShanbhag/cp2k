@@ -3317,7 +3317,7 @@ CONTAINS
    END SUBROUTINE dipole_deriv_ao
 
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Get list of kpoints from input to compute dipole moment elements
 !> \param qs_env ...
 !> \param xkp ...
 !> \param special_pnts ...
@@ -3441,7 +3441,7 @@ CONTAINS
 
    END SUBROUTINE get_xkp_for_dipole_calc
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Calculate local moment matrix for periodic system for all image cells
 !> \param qs_env ...
 !> \param moments_rs_img ...
 !> \param rcc ...
@@ -3620,7 +3620,7 @@ CONTAINS
    END SUBROUTINE build_local_moment_matrix_rs_img
 
 ! **************************************************************************************************
-!> \brief ...
+!> \brief Calculate and print dipole moment elements d_nm(k) for k-point calculations
 !> \param qs_env ...
 !> \param nmoments ...
 !> \param reference ...
@@ -3667,7 +3667,7 @@ CONTAINS
 
       CALL timeset(routineN, handle)
 
-      IF (nmoments > 1) CPABORT("KPOINT quadrupole and hihger moments not implemented.")
+      IF (nmoments > 1) CPABORT("KPOINT quadrupole and higher moments not implemented.")
 
       CALL get_qs_env(qs_env, &
                       matrix_ks_kp=matrix_ks_kp, &
@@ -3823,9 +3823,9 @@ CONTAINS
                END DO
             END DO
             WRITE (unit_number, "(/,1X,A)") "Berry Curvature"
-            WRITE (unit_number, "(2X,A)") " kp  n      YZ          ZX          XY"
+            WRITE (unit_number, "(2X,A)") "  kp   n      YZ          ZX          XY"
             DO n = 1, nao
-               WRITE (unit_number, "(2X,2I3,3(1X,G11.3))") &
+               WRITE (unit_number, "(2X,2I4,3(1X,G11.3))") &
                   ikp, n, bc_to_print(1, n), bc_to_print(2, n), bc_to_print(3, n)
             END DO
          END IF
