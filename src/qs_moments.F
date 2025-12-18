@@ -3634,17 +3634,15 @@ CONTAINS
       REAL(dp), DIMENSION(:), INTENT(IN), POINTER        :: ref_point
       INTEGER, INTENT(IN)                                :: unit_number
       CHARACTER(LEN=*), PARAMETER                        :: routineN = 'qs_moment_kpoints'
-      COMPLEX(KIND=dp)                                   :: phase
-      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE     :: C_k, H_k, S_k, D_k, &
-                                                            CDC, C_dH_C, C_dS_C, &
-                                                            dH_dk_i, dS_dk_i
+      COMPLEX(KIND=dp)                                   :: phase, tmp_max
+      COMPLEX(KIND=dp), DIMENSION(:, :), ALLOCATABLE     :: C_k, H_k, S_k, D_k, CDC, C_dH_C, &
+                                                            C_dS_C, dH_dk_i, dS_dk_i
       COMPLEX(KIND=dp), DIMENSION(:, :, :), ALLOCATABLE  :: dip, dipole_to_print
       COMPLEX(KIND=dp), DIMENSION(:, :, :, :), &
          ALLOCATABLE                                     :: dipole_to_store
-      INTEGER                                            :: handle, ikp_in_batch, i_dir, ikp, i, j, nkp, &
-                                                            n_img_scf, n_img_all, n_rep, nao, npline, &
-                                                            num_pe, num_copy, mepos
-      INTEGER, DIMENSION(:), POINTER                     :: realindex
+      INTEGER                                            :: handle, i_dir, ikp, nkp, nmo, &
+                                                            n_img_scf, n_img_all, nao, &
+                                                            num_pe, num_copy, mepos, n, m, mu
       INTEGER, DIMENSION(:, :), POINTER                  :: index_to_cell_all
       INTEGER, DIMENSION(:, :, :), POINTER               :: cell_to_index_all
       REAL(KIND=dp), DIMENSION(3)                        :: rcc
@@ -3656,7 +3654,8 @@ CONTAINS
       REAL(KIND=dp), DIMENSION(:, :, :, :), &
          ALLOCATABLE                                     :: D_rs, H_rs, S_rs
       TYPE(cell_type), POINTER                           :: cell
-      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: moments_rs_img, matrix_ks_kp, matrix_s_kp
+      TYPE(dbcsr_p_type), DIMENSION(:, :), POINTER       :: moments_rs_img, matrix_ks_kp, &
+                                                            matrix_s_kp
       TYPE(dft_control_type), POINTER                    :: dft_control
       TYPE(kpoint_type), POINTER                         :: kpoints_all, kpoints_scf
       TYPE(mo_set_type), DIMENSION(:), POINTER           :: mos
@@ -3682,6 +3681,8 @@ CONTAINS
 
       CPASSERT(SIZE(matrix_ks_kp, 1) == 1)!  only for closed shell at present
       CALL get_mo_set(mo_set=mos(1), nao=nao)
+      ! for now, and for clarity
+      nmo = nao
 
       ! create kpoint environment kpoints_all which contains all neighbor cells R
       ! without considering any lattice symmetry
@@ -3723,27 +3724,11 @@ CONTAINS
       ALLOCATE (CDC(nao, nao), dip(3, nao, nao), S_k(nao, nao), H_k(nao, nao), source=z_zero)
       ALLOCATE (C_k(nao, nao), D_k(nao, nao), dipole_to_store(num_copy, 3, nao, nao), source=z_zero)
       ALLOCATE (eigenvals(nao), bc(3, nao), bc_to_store(num_copy, 3, nao), source=0.0_dp)
-      ALLOCATE (realindex(nao))
-
-      ! Calculate S(k) and H(k) at the Γ point
-      ! S^R -> S(k=0), H^R -> H(k=0)
-      CALL rs_to_kp(S_rs(1, :, :, :), S_k, index_to_cell_all, [0.0_dp,0.0_dp,0.0_dp])
-      CALL rs_to_kp(H_rs(1, :, :, :), H_k, index_to_cell_all, [0.0_dp,0.0_dp,0.0_dp])
-      CALL geeig_right(H_k, S_k, eigenvals, C_k)
-      DO j=1, nao
-         realindex(j) = 1
-         phase = C_k(1,j)
-         DO i=1, nao
-            IF (ABS(C_k(i,j))< ABS(phase)) CYCLE
-            realindex(j) = i
-            phase = C_k(i,j)
-         END DO
-      END DO
 
 !$OMP PARALLEL DO DEFAULT(NONE) PRIVATE(ikp, S_k, H_k, eigenvals, C_k, &
-!$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC, phase) &
-!$OMP SHARED(num_pe, mepos,dipole_to_store, bc_to_store, realindex, &
-!$OMP nkp, xkp, S_rs, H_rs, D_rs, index_to_cell_all, hmat, nao, unit_number)
+!$OMP dS_dk_i, dH_dk_i, D_k, dip, bc, C_dS_C, C_dH_C, CDC, tmp_max, phase) &
+!$OMP SHARED(num_pe, mepos,dipole_to_store, bc_to_store, nmo, nao,&
+!$OMP nkp, xkp, S_rs, H_rs, D_rs, index_to_cell_all, hmat, unit_number)
       DO ikp = 1, nkp
          IF (mod(ikp - 1, num_pe) /= mepos) CYCLE
 
@@ -3753,9 +3738,18 @@ CONTAINS
 
          ! Diagonalize H(k)C(k) = S(k)C(k)ε(k)
          CALL geeig_right(H_k, S_k, eigenvals, C_k)
-         DO j=1, nao
-            phase=C_k(realindex(j), j)/ABS(C_k(realindex(j), j))
-            C_k(:,j)=C_k(:,j)/phase
+
+         ! To have a smooth complex phase of C(k) as function of k, for every n, we force
+         ! the largest C_μ,n(k) to be real.
+         ! This is important to have a continuous dipole moment d_nm(k) as a function of k
+         DO n=1, nmo
+            tmp_max = C_k(1,n)
+            DO mu=1, nao
+               IF (ABS(C_k(mu,n))< ABS(tmp_max)) CYCLE
+               tmp_max = C_k(mu,n)
+            END DO
+            phase=tmp_max/ABS(tmp_max)
+            C_k(:,n)=C_k(:,n)/phase
          END DO
 
          DO i_dir = 1, 3 ! d^x, d^y, d^z
@@ -3775,13 +3769,13 @@ CONTAINS
             ! Compute the dipole
             ! d_nm (k) = - i/(ε(n)-ε(m)) [ (C^H)(dH(k)/dk)C ]_nm
             !            + i ε(n)/(ε(n)-ε(m)) [ (C^H)(dS(k)/dk)C ]_nm + [ (C^H)D(k)C ]_nm
-            DO i = 1, nao
-               DO j = 1, nao
-                  IF (i == j) CYCLE ! diagonal elements would need to be computed from
+            DO n = 1, nmo
+               DO m = 1, nmo
+                  IF (n == m) CYCLE ! diagonal elements would need to be computed from
                   ! a numerical k-derivative which is not implemented
-                  dip(i_dir, i, j) = -gaussi*C_dH_C(i, j)/(eigenvals(i) - eigenvals(j)) &
-                                     + gaussi*eigenvals(i)*C_dS_C(i, j)/(eigenvals(i) - eigenvals(j)) &
-                                     + CDC(i, j)
+                  dip(i_dir, n, m) = -gaussi*C_dH_C(n, m)/(eigenvals(n) - eigenvals(m)) &
+                                     + gaussi*eigenvals(n)*C_dS_C(n, m)/(eigenvals(n) - eigenvals(m)) &
+                                     + CDC(n, m)
                END DO
             END DO
          END DO
@@ -3789,11 +3783,11 @@ CONTAINS
          ! Ω^γ_n = Σ_m 2*Im[d^α_nm (d^β_mn)*], where, α, β, γ belong to {x, y, z}
          bc = 0
          DO i_dir = 1, 3
-            DO i = 1, nao
-               DO j = 1, nao
-                  IF (i == j) CYCLE
-                  bc(i_dir, i) = bc(i_dir, i) &
-                                 + 2*AIMAG(dip(1 + MOD(i_dir, 3), i, j)*dip(1 + MOD(i_dir + 1, 3), j, i))
+            DO n = 1, nmo
+               DO m = 1, nmo
+                  IF (n == m) CYCLE
+                  bc(i_dir, n) = bc(i_dir, n) &
+                                 + 2*AIMAG(dip(1 + MOD(i_dir, 3), n, m)*dip(1 + MOD(i_dir + 1, 3), m, n))
                END DO
             END DO
          END DO
@@ -3817,22 +3811,22 @@ CONTAINS
          CALL para_env%sum(bc_to_print)
          IF (unit_number > 0) THEN
             IF (special_pnts(ikp) /= "") WRITE (unit_number, "(/,2X,A,A)") &
-               "Special point", ADJUSTL(TRIM(special_pnts(ikp)))
+               "Special point: ", ADJUSTL(TRIM(special_pnts(ikp)))
             WRITE (unit_number, "(/,1X,A,I3,1X,3(A,1F12.6))") &
                "Kpoint:", ikp, ", kx:", xkp(1,ikp), ", ky:", xkp(2,ikp), ", kz:", xkp(3,ikp)
-            WRITE (unit_number, "(2X,A)") "n  m   Re(d_nm^x)   Im(d_nm^x)  &
-            & Re(d_nm^y)   Im(d_nm^y)   Re(d_nm^z)   Im(d_nm^z)"
-            DO i = 1, nao
-               DO j = 1, nao
-                  IF (i == j) CYCLE
-                  WRITE (unit_number, "(2I3,6(1X,G12.4))") i, j, dipole_to_print(1:3, i, j)
+            WRITE (unit_number, "(2X,A)") " kp  n  m  Re(dx_nm)  Im(dx_nm) &
+            & Re(dy_nm)  Im(dy_nm)  Re(dz_nm)  Im(dz_nm)"
+            DO n = 1, nao
+               DO m = 1, nao
+                  IF (n == m) CYCLE
+                  WRITE (unit_number, "(1X,I4,2I3,6(G11.3))") ikp, n, m, dipole_to_print(1:3, n, m)
                END DO
             END DO
             WRITE (unit_number, "(/,1X,A)") "Berry Curvature"
-            WRITE (unit_number, "(2X,A)") "  n        YZ           ZX           XY"
-            DO i = 1, nao
-               WRITE (unit_number, "(2X,I3,3(1X,F12.6))") &
-                  i, bc_to_print(1, i), bc_to_print(2, i), bc_to_print(3, i)
+            WRITE (unit_number, "(2X,A)") " kp  n      YZ          ZX          XY"
+            DO n = 1, nao
+               WRITE (unit_number, "(2X,2I3,3(1X,G11.3))") &
+                  ikp, n, bc_to_print(1, n), bc_to_print(2, n), bc_to_print(3, n)
             END DO
          END IF
       END DO
